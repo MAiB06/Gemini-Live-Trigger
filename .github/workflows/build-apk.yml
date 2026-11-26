@@ -1,0 +1,139 @@
+name: Build Gemini Live Launcher APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # only used by the optional "latest" release step at the end
+
+concurrency:
+  group: build-apk
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Extract the source ZIP
+        run: |
+          set -eu
+          if [ -f GeminiLiveLauncher-source.zip ]; then
+            ZIP=GeminiLiveLauncher-source.zip
+          else
+            ZIP="$(find . -maxdepth 1 -type f -iname '*.zip' | sort | head -n 1)"
+          fi
+          if [ -z "${ZIP:-}" ]; then
+            echo "::error::No .zip file found in the repository root."
+            ls -la
+            exit 1
+          fi
+          echo "Using ZIP: $ZIP"
+          rm -rf _src
+          mkdir _src
+          unzip -q "$ZIP" -d _src
+          find _src -maxdepth 3 > /tmp/tree.txt
+          head -n 40 /tmp/tree.txt
+
+      - name: Locate the Gradle project
+        id: gradle
+        run: |
+          set -eu
+          SETTINGS="$(find _src -type f \( -name 'settings.gradle.kts' -o -name 'settings.gradle' \) -not -path '*/__MACOSX/*' | awk '{ print gsub("/","/") " " $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)"
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No settings.gradle(.kts) found inside the ZIP."
+            find _src > /tmp/tree.txt
+            head -n 60 /tmp/tree.txt
+            exit 1
+          fi
+          DIR="$(dirname "$SETTINGS")"
+          echo "Gradle project folder: $DIR"
+          if [ ! -f "$DIR/app/src/main/AndroidManifest.xml" ]; then
+            echo "::error::app/src/main/AndroidManifest.xml is missing from the project."
+            exit 1
+          fi
+          if [ ! -f "$DIR/app/build.gradle.kts" ] && [ ! -f "$DIR/app/build.gradle" ]; then
+            echo "::error::app/build.gradle(.kts) is missing from the project."
+            exit 1
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Check that every XML file is well-formed
+        env:
+          PROJECT_DIR: ${{ steps.gradle.outputs.dir }}
+        run: |
+          python3 - <<'PY'
+          import os, sys, xml.dom.minidom
+          bad = 0
+          for root, _, files in os.walk(os.environ["PROJECT_DIR"]):
+              for f in files:
+                  if f.endswith(".xml"):
+                      p = os.path.join(root, f)
+                      try:
+                          xml.dom.minidom.parse(p)
+                      except Exception as e:
+                          bad += 1
+                          print("::error file=%s::%s" % (p, e))
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK platform and build-tools
+        run: sdkmanager --install "platforms;android-35" "build-tools;34.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build debug APK
+        working-directory: ${{ steps.gradle.outputs.dir }}
+        run: gradle assembleDebug --stacktrace --no-daemon
+
+      - name: Collect and inspect the APK
+        env:
+          PROJECT_DIR: ${{ steps.gradle.outputs.dir }}
+        run: |
+          set -eu
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" -name '*.apk' | head -n 1)"
+          if [ -z "$APK" ]; then
+            echo "::error::Build finished but no APK was produced."
+            exit 1
+          fi
+          cp "$APK" GeminiLiveLauncher-debug.apk
+          ls -l GeminiLiveLauncher-debug.apk
+          "$ANDROID_HOME/build-tools/34.0.0/aapt2" dump badging GeminiLiveLauncher-debug.apk > /tmp/badging.txt || true
+          grep -E "^(package|sdkVersion|targetSdkVersion)" /tmp/badging.txt || true
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --print-certs GeminiLiveLauncher-debug.apk > /tmp/sign.txt 2>&1 || true
+          head -n 3 /tmp/sign.txt
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeminiLiveLauncher-debug-apk
+          path: GeminiLiveLauncher-debug.apk
+          if-no-files-found: error
+
+      - name: Publish APK to the "latest" release (optional, easier to download on a phone)
+        continue-on-error: true
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest debug APK
+          prerelease: true
+          body: Newest build of Gemini Live Launcher. Download GeminiLiveLauncher-debug.apk below.
+          files: GeminiLiveLauncher-debug.apk
