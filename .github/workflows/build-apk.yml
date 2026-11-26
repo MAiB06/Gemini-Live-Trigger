@@ -16,6 +16,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Check out repository
@@ -89,11 +92,20 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install SDK platform and build-tools
-        run: sdkmanager --install "platforms;android-35" "build-tools;34.0.0"
+      - name: Prepare Android SDK (uses the SDK already on the runner)
+        run: |
+          set -u
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          ls "$ANDROID_HOME"
+          yes | "$SDKM" --licenses > /tmp/licenses.txt 2>&1 || true
+          tail -n 2 /tmp/licenses.txt
+          if "$SDKM" --install "platforms;android-35" "build-tools;34.0.0" > /tmp/sdk-install.txt 2>&1; then
+            tail -n 3 /tmp/sdk-install.txt
+          else
+            tail -n 30 /tmp/sdk-install.txt
+            echo "::warning::sdkmanager install failed; Gradle will try to download what it needs."
+          fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
