@@ -18,45 +18,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install unzip
-        run: sudo apt-get update && sudo apt-get install -y unzip
-
-      - name: Extract Android source
+      - name: Extract source ZIP
         run: |
-          ZIP_FILE="GeminiLiveLauncher-source.zip"
+          mkdir -p extracted
+          ZIP_FILE=$(find . -maxdepth 1 -type f -iname "*.zip" | head -n 1)
 
-          if [ ! -f "$ZIP_FILE" ]; then
-            echo "ERROR: $ZIP_FILE was not found in the repository root."
-            echo "Upload the source ZIP to the main repository page."
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No source ZIP found in repository root!"
             exit 1
           fi
 
-          mkdir -p extracted
+          echo "Extracting $ZIP_FILE"
           unzip -o "$ZIP_FILE" -d extracted
 
-          echo "Source archive extracted successfully."
-
-      - name: Locate Gradle project
+      - name: Find Android project
         run: |
-          SETTINGS_FILE=$(find extracted -type f \
+          SETTINGS=$(find extracted -type f \
             \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
             -print -quit)
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: No Gradle settings file found in extracted source."
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Gradle settings file not found!"
             exit 1
           fi
 
-          PROJECT_DIR=$(dirname "$SETTINGS_FILE")
+          PROJECT_DIR=$(dirname "$SETTINGS")
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          echo "Gradle project found at: $PROJECT_DIR"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -64,8 +57,8 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build APK
-        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle --no-daemon assembleDebug
+        working-directory: ${{ env.PROJECT_DIR }}
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
